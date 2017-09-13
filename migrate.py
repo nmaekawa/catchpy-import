@@ -37,11 +37,12 @@ django.setup()
 from anno.crud import CRUD
 from anno.json_models import AnnoJS
 from anno.json_models import Catcha
+from anno.models import Anno
 from consumer.catchjwt import encode_catchjwt
 
 
 DEFAULT_REQUESTS_TIMEOUT = 5
-SEARCH_PAGE_SIZE = 100
+SEARCH_PAGE_SIZE = 500
 
 class CatchSearchClient(object):
 
@@ -106,7 +107,9 @@ def convert_to_catcha(annojs_list):
         try:
             catcha = Catcha.normalize(annojs)
         except Exception as e:
+            click.echo('CONVERSION ERROR: {} -- '.format(e))
             error_list.append(annojs)
+            raise e
         else:
             catcha_list.append(catcha)
 
@@ -123,9 +126,25 @@ def clean_to_alphanum_only(name):
     return re.sub(r'[^A-za-z0-9]', '_', name)
 
 
+
 @click.group()
 def cli():
     pass
+
+@click.command()
+@click.option('--source_url', required=True, help='include http/https')
+@click.option('--api_key', required=True)
+@click.option('--secret_key', required=True)
+@click.option('--user', default='user')
+def make_token(source_url, api_key, secret_key, user):
+
+    # create searchClient
+    client = CatchSearchClient(
+        base_url=source_url, api_key=api_key,
+        secret_key=secret_key, user='admin')
+
+    click.echo(client.make_token_for_user(user))
+
 
 @click.command()
 @click.option('--outdir', default='tmp', help='output DIRECTORY; default=./tmp')
@@ -256,6 +275,7 @@ def convert_and_save(json_content, workdir, filename):
     click.echo('workdir({}), filename({}), json_content({})'.format(workdir,
                                                                     filename,
                                                                     len(json_content)))
+
     # convert
     (catcha_list, error_list) = convert_to_catcha(json_content)
     click.echo('............ catcha_list({}), error_list({})'.format(
@@ -267,8 +287,9 @@ def convert_and_save(json_content, workdir, filename):
     if len(error_list) > 0:
         save_to_file(workdir,
                      filename='error_{0}.json'.format(filename),
-                     json_context=error_list)
+                     json_content=error_list)
 
+    return(catcha_list, error_list)
 
 
 @click.command()
@@ -302,18 +323,212 @@ def push_to_target(workdir, context_id):
             ordered_catcha_list = sorted(
                 catcha_content, key=lambda k: k['id'])
 
+            save_to_file(workdir,
+                         filename='sorted_{}.json'.format(filename),
+                         json_content=ordered_catcha_list)
+
+            '''
             resp_filename = 'error_{}'.format(filename)
             resp_filepath = os.path.join(workdir, resp_filename)
 
             import_to_db(ordered_catcha_list, resp_filepath)
+            '''
+
+@click.command()
+@click.option('--workdir', default='tmp', help='directory for input/output; default=./tmp')
+@click.option('--context_id', required=True)
+def debug(workdir, context_id):
+    fullset_name = clean_to_alphanum_only(context_id)
+    all_files = sorted(os.listdir(workdir))
+    filename_regex = \
+            r'^catcha_' + re.escape(fullset_name) + '_(?P<page_no>[0-9]{3})'
+
+    # loop through input files
+    for filename in all_files:
+        if fnmatch.fnmatch(filename, 'catcha_{}*'.format(fullset_name)):
+            # parse filename to get the page number
+            match = re.search(filename_regex, filename)
+            if match is None:  # skip file
+                continue
+
+            page_no = match.group('page_no')
+
+            # read file contents
+            path = os.path.join(workdir, filename)
+
+            click.echo('pushing filename: {}'.format(filename))
+
+            with open(path, 'r') as f:
+                catcha_content = json.load(f)
+
+            # sort by anno_id to avoid importing reply before comment
+            ordered_catcha_list = sorted(
+                catcha_content, key=lambda k: k['id'])
+
+            for c in ordered_catcha_list:
+                click.echo('id({}) created({})'.format(c['id'], c['created']))
+
+
+
+@click.command()
+@click.option('--outdir', default='tmp', help='output DIRECTORY; default=./tmp')
+@click.option('--offset_start', default=0,
+              help='if not pulling all set, specify offset to start')
+@click.option('--source_url', required=True, help='include http/https')
+@click.option('--api_key', required=True)
+@click.option('--secret_key', required=True)
+@click.option('--context_id', required=True)
+@click.option('--reuse_outdir/--no_reuse',
+              'exist_ok', default=False, help='default=no_reuse')
+def pull_all(outdir, offset_start, source_url,
+                     api_key, secret_key, context_id,
+                     exist_ok):
+
+    # create output dir
+    try:
+        os.makedirs(outdir, mode=0o776, exist_ok=exist_ok)
+    except OSError:
+        click.echo('ERROR: outdir already exists({})'.format(outdir))
+        return
+
+    # create searchClient
+    client = CatchSearchClient(
+        base_url=source_url, api_key=api_key,
+        secret_key=secret_key, user='admin')
+
+    # search all context_ids?
+    search_context_id = None if context_id == 'None' else context_id
+
+    # loop for fetching fullset
+    try:
+        total_len = client.fullset_size(contextId=search_context_id)
+    except Exception as e:
+        click.echo('ERROR: unable to fetch fullset_size: {}'.format(e))
+        return
+
+    total_pages = int(total_len/SEARCH_PAGE_SIZE)
+    if total_len % SEARCH_PAGE_SIZE > 0:
+        total_pages += 1
+
+    # save info about this search
+    fullset_name = clean_to_alphanum_only(context_id)
+    fullset_info = {
+        'source_url': source_url,
+        'api_key': api_key,
+        'context_id': context_id,
+        'total_rows': total_len,
+    }
+    save_to_file(outdir=outdir,
+                 filename='info_annojs_{0}.json'.format(fullset_name),
+                 json_content=fullset_info)
+    click.echo('total_len({}), total_pages({})'.format(total_len, total_pages))
+
+
+    # need to pull slices of result
+    page_no = 1
+    current_len = 0
+    offset = offset_start
+    fullset_anno = {}
+    more_to_pull = True
+    while more_to_pull and page_no < 50000:
+        try:
+            page_content = client.fetch_page(
+                contextId=search_context_id, offset=offset, limit=SEARCH_PAGE_SIZE)
+        except Exception as e:
+            click.echo('ERRO: {}'.format(e))
+            return
+        else:
+            for c in page_content['rows']:
+                if c['id'] in fullset_anno:
+                    click.echo('GAAAAAAAAAAAAAAAAAAAAAH, duplicate({})'.format(c['id']))
+                else:
+                    fullset_anno[c['id']] = c
+
+            size = int(page_content['size'])
+            current_len += size
+            offset += size
+            more_to_pull = size > 0
+            click.echo('next page_no({}); current_len({}); more?({})'.format(
+                page_no, current_len, more_to_pull))
+            page_no += 1
+
+    click.echo('FINISH pulling from source, total({})'.format(len(fullset_anno)))
+
+    save_to_file(outdir=outdir,
+                 filename='fullset_annojs_{}.json'.format(fullset_name),
+                 json_content=list(fullset_anno.values()))
+
+    (catcha_list, error_list) = convert_and_save(
+        json_content=list(fullset_anno.values()),
+        workdir=outdir,
+        filename='fullset_catcha_{}.json'.format(fullset_name))
+
+
+@click.command()
+@click.option('--workdir', default='tmp', help='output DIRECTORY; default=./tmp')
+@click.option('--filepath', required=True, help='filepath for input file')
+def push_from_file(workdir, filepath):
+
+    with open(filepath, 'r') as f:
+        catcha_list = json.load(f)
+
+    # sort between comment and replies
+    comment_list = []
+    reply_list = []
+    for c in catcha_list:
+        if Catcha.is_reply(c):
+            reply_list.append(c)
+        else:
+            comment_list.append(c)
+
+    click.echo('comments({}), replies({})'.format(len(comment_list),
+                                                  len(reply_list)))
+
+    jwt_payload = {'override': ['CAN_IMPORT']}
+    resp_comment = CRUD.import_annos(comment_list, jwt_payload)
+    resp_reply = CRUD.import_annos(reply_list, jwt_payload)
+
+    failed_list = resp_comment['failed'] + resp_reply['failed']
+    save_to_file(outdir=workdir,
+                 filename='fail_to_push_from_file_{}'.format(
+                     os.path.basename(filepath)),
+                json_content=failed_list)
+
+
+
+@click.command()
+@click.option('--workdir', default='tmp', help='output DIRECTORY; default=./tmp')
+@click.option('--context_id', required=True)
+def clear_anno_in_context_id(workdir, context_id):
+
+    anno_list = Anno._default_manager.filter(
+        raw__platform__context_id=context_id)
+
+    failed_list = []
+    for a in anno_list:
+        try:
+            a.delete()
+        except Exception as e:
+            click.echo('error deleting({}): {}'.format(a.anno_id, e))
+            failed_list.append(a.serialized)
+
+    save_to_file(outdir=workdir,
+                 filename='fail_to_delete_{}.json'.format(
+                     clean_to_alphanum_only(context_id)),
+                json_content=failed_list)
 
 
 
 if __name__ == "__main__":
 
     cli.add_command(pull_from_source)
+    cli.add_command(pull_all)
     cli.add_command(convert)
     cli.add_command(push_to_target)
+    cli.add_command(push_from_file)
+    cli.add_command(debug)
+    cli.add_command(clear_anno_in_context_id)
+    cli.add_command(make_token)
     cli()
 
 
