@@ -41,7 +41,7 @@ from anno.models import Anno
 from consumer.catchjwt import encode_catchjwt
 
 
-DEFAULT_REQUESTS_TIMEOUT = 5
+DEFAULT_REQUESTS_TIMEOUT = 300
 SEARCH_PAGE_SIZE = 500
 
 class CatchSearchClient(object):
@@ -75,7 +75,7 @@ class CatchSearchClient(object):
             'contextId': contextId,
         }
         resp = requests.get(
-            self.url, params=params,
+            self.url, params=params, verify=False,
             headers=self.default_headers, timeout=self.timeout)
         resp.raise_for_status()
 
@@ -92,7 +92,7 @@ class CatchSearchClient(object):
             'contextId': contextId,
         }
         resp = requests.get(
-            self.url, params=params,
+            self.url, params=params, verify=False,
             headers=self.default_headers, timeout=self.timeout)
         resp.raise_for_status()
 
@@ -242,26 +242,54 @@ def convert(workdir, context_id):
     filename_regex = \
             r'^annojs_' + re.escape(fullset_name) + '_(?P<page_no>[0-9]{3})'
 
+    count_missing_start = 0
+
     # loop through input files
     for filename in all_files:
-        if fnmatch.fnmatch(filename, 'annojs_{}*'.format(fullset_name)):
-            # parse filename to get the page number
-            match = re.search(filename_regex, filename)
-            if match is None:  # skip file
-                continue
+        if not fnmatch.fnmatch(filename, 'annojs_{}*'.format(fullset_name)):
+            continue
 
-            page_no = match.group('page_no')
+        # parse filename to get the page number
+        match = re.search(filename_regex, filename)
+        if match is None:  # skip file
+            click.echo('did not match, skipping {}'.format(filename))
+            continue
 
-            # read file contents
-            path = os.path.join(workdir, filename)
-            with open(path, 'r') as f:
-                annojs_content = json.load(f)
+        click.echo('did match, processing {}'.format(filename))
+        page_no = match.group('page_no')
 
-            # convert and save
-            catcha_filename = 'catcha_{0}_{1}.json'.format(fullset_name, page_no)
-            convert_and_save(json_content=annojs_content['rows'],
-                             workdir=workdir,
-                             filename=catcha_filename)
+        # read file contents
+        path = os.path.join(workdir, filename)
+        with open(path, 'r') as f:
+            annojs_content = json.load(f)
+
+        # hammering fixes
+        annojs_ok = []
+        annojs_messed = []
+        for c in annojs_content:
+            if 'media' in c:
+                if len(c['ranges']) > 0:
+                    if 'start' not in c['ranges'][0]:
+                        c['ranges'][0]['start'] = ""
+                        c['ranges'][0]['end'] = ""
+                        count_missing_start += 1
+                annojs_ok.append(c)
+            else:
+                annojs_messed.append(c)
+
+        # save messed up
+        save_to_file(workdir, 'messed_{}'.format(filename), annojs_messed)
+
+        # convert and save
+        catcha_filename = 'catcha_{0}_{1}.json'.format(fullset_name, page_no)
+        (catcha_list, error_list) =  convert_and_save(
+            json_content=annojs_ok,
+            workdir=workdir,
+            filename=catcha_filename)
+
+
+    click.echo('exiting loop through input files')
+    click.echo('missing start({})'.format(count_missing_start))
 
 
 def import_to_db(catcha_list, resp_filepath):
@@ -432,24 +460,27 @@ def pull_all(outdir, offset_start, source_url,
     more_to_pull = True
     while more_to_pull and page_no < 50000:
         try:
+            click.echo('************** pulling page({}), offset({}), limit({})'.format(
+                page_no, offset, SEARCH_PAGE_SIZE))
             page_content = client.fetch_page(
                 contextId=search_context_id, offset=offset, limit=SEARCH_PAGE_SIZE)
         except Exception as e:
             click.echo('ERRO: {}'.format(e))
             return
         else:
+            size = 0
             for c in page_content['rows']:
                 if c['id'] in fullset_anno:
                     click.echo('GAAAAAAAAAAAAAAAAAAAAAH, duplicate({})'.format(c['id']))
                 else:
                     fullset_anno[c['id']] = c
+                    size += 1
 
-            size = int(page_content['size'])
             current_len += size
             offset += size
             more_to_pull = size > 0
-            click.echo('next page_no({}); current_len({}); more?({})'.format(
-                page_no, current_len, more_to_pull))
+            click.echo('next page_no({}); this batch size({}); current_len({}); more?({})'.format(
+                page_no, size, current_len, more_to_pull))
             page_no += 1
 
     click.echo('FINISH pulling from source, total({})'.format(len(fullset_anno)))
