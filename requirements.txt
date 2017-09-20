@@ -1,0 +1,4 @@
+-r ../catchpy/requirements/base.txt
+
+-e ../catchpy
+requests==2.18.3
