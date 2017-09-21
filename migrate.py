@@ -45,11 +45,16 @@ DEFAULT_REQUESTS_TIMEOUT = 300
 SEARCH_PAGE_SIZE = 500
 
 class CatchSearchClient(object):
+    """ perform searches in catch backend; _always_ in AnnotatorJS context."""
 
-    def __init__(self, base_url, api_key,
-                 secret_key, user=None, timeout=None):
+    def __init__(self,
+                 base_url,     # eg. "http://catch.harvardx.harvard.edu/catch/annotator/search"
+                 api_key,
+                 secret_key,
+                 user=None,
+                 timeout=None):
 
-        self.url = urljoin(base_url, '/catch/annotator/search')
+        self.url = base_url
         self.api_key = api_key
         self.secret_key = secret_key
         self.timeout = timeout or DEFAULT_REQUESTS_TIMEOUT
@@ -72,7 +77,7 @@ class CatchSearchClient(object):
         params = {
             'limit': 1,
             'offset': 0,
-            'context_id': context_id,
+            'contextId': context_id,
         }
         resp = requests.get(
             self.url, params=params, verify=False,
@@ -89,63 +94,7 @@ class CatchSearchClient(object):
         params = {
             'limit': limit,
             'offset': offset,
-            'context_id': context_id,
-        }
-        resp = requests.get(
-            self.url, params=params, verify=False,
-            headers=self.default_headers, timeout=self.timeout)
-        resp.raise_for_status()
-
-        search_content = resp.json()
-        return search_content
-
-
-class CatchSearchClient_v2(object):
-
-    def __init__(self, base_url, api_key,
-                 secret_key, user=None, timeout=None):
-
-        self.url = urljoin(base_url, '/annos/search')
-        self.api_key = api_key
-        self.secret_key = secret_key
-        self.timeout = timeout or DEFAULT_REQUESTS_TIMEOUT
-        self.user = user or 'fake'
-        self.default_headers = {
-            'Content-Type': 'application/json',
-            'x-annotator-auth-token': self.make_token_for_user(self.user),
-        }
-
-
-    def make_token_for_user(self, user):
-        return encode_catchjwt(
-            apikey=self.api_key, secret=self.secret_key,
-            user=user, ttl=86400).decode('utf-8')
-
-
-    def fullset_size(self, context_id=None):
-
-        # first search to check how many records to retrieve
-        params = {
-            'limit': 1,
-            'offset': 0,
-            'context_id': context_id,
-        }
-        resp = requests.get(
-            self.url, params=params, verify=False,
-            headers=self.default_headers, timeout=self.timeout)
-        resp.raise_for_status()
-
-        search_content = resp.json()
-        return search_content['total']
-
-
-    def fetch_page(self, context_id=None, offset=0, limit=1):
-
-        # first search to check how many records to retrieve
-        params = {
-            'limit': limit,
-            'offset': offset,
-            'context_id': context_id,
+            'contextId': context_id,
         }
         resp = requests.get(
             self.url, params=params, verify=False,
@@ -200,92 +149,6 @@ def make_token(source_url, api_key, secret_key, user):
         secret_key=secret_key, user='admin')
 
     click.echo(client.make_token_for_user(user))
-
-
-@click.command()
-@click.option('--outdir', default='tmp', help='output DIRECTORY; default=./tmp')
-@click.option('--offset_start', default=0,
-              help='if not pulling all set, specify offset to start')
-@click.option('--source_url', required=True, help='include http/https')
-@click.option('--api_key', required=True)
-@click.option('--secret_key', required=True)
-@click.option('--context_id', required=True)
-@click.option('--catcha_ok/--skip-catcha', default=True,
-              help='default is to convert to catcha, as pulled from source')
-@click.option('--reuse_outdir/--no_reuse',
-              'exist_ok', default=False, help='default=no_reuse')
-def pull_from_source(outdir, offset_start, source_url,
-                     api_key, secret_key, context_id,
-                     catcha_ok, exist_ok):
-
-    # create output dir
-    try:
-        os.makedirs(outdir, mode=0o776, exist_ok=exist_ok)
-    except OSError:
-        click.echo('ERROR: outdir already exists({})'.format(outdir))
-        return
-
-    # create searchClient
-    client = CatchSearchClient(
-        base_url=source_url, api_key=api_key,
-        secret_key=secret_key, user='admin')
-
-    # search all context_ids?
-    search_context_id = None if context_id == 'None' else context_id
-
-    # loop for fetching fullset
-    try:
-        total_len = client.fullset_size(context_id=search_context_id)
-    except Exception as e:
-        click.echo('ERROR: unable to fetch fullset_size: {}'.format(e))
-        return
-
-    total_pages = int(total_len/SEARCH_PAGE_SIZE)
-    if total_len % SEARCH_PAGE_SIZE > 0:
-        total_pages += 1
-
-    # save info about this search
-    fullset_name = clean_to_alphanum_only(context_id)
-    fullset_info = {
-        'source_url': source_url,
-        'api_key': api_key,
-        'context_id': context_id,
-        'total_rows': total_len,
-    }
-    save_to_file(outdir=outdir,
-                 filename='info_annojs_{0}.json'.format(fullset_name),
-                 json_content=fullset_info)
-    click.echo('total_len({}), total_pages({})'.format(total_len, total_pages))
-
-
-    # need to pull slices of result
-    page_no = 1
-    current_len = 0
-    offset = offset_start
-    while current_len < total_len:
-        try:
-            page_content = client.fetch_page(
-                context_id=search_context_id, offset=offset, limit=SEARCH_PAGE_SIZE)
-        except Exception as e:
-            click.echo('ERRO: {}'.format(e))
-            return
-        else:
-            save_to_file(outdir=outdir,
-                         filename='annojs_{0}_{1:06d}.json'.format(
-                             fullset_name, page_no),
-                         json_content=page_content)
-
-            if catcha_ok:
-                convert_and_save(json_content=page_content['rows'],
-                                 workdir=outdir,
-                                 filename='catcha_{0}_{1:06d}.json'.format(
-                                     fullset_name, page_no))
-
-            current_len += int(page_content['size'])
-            offset += int(page_content['size'])
-            click.echo('next page_no({}); current_len({})'.format(page_no,
-                                                                  current_len))
-            page_no += 1
 
 
 
@@ -527,6 +390,7 @@ def pull_all(outdir, offset_start, source_url,
             size = 0
             for c in page_content['rows']:
                 if c['id'] in fullset_anno:
+                    # sanity check, not supposed to happen (i think)
                     click.echo('GAAAAAAAAAAAAAAAAAAAAAH, duplicate({})'.format(c['id']))
                 else:
                     fullset_anno[c['id']] = c
@@ -545,10 +409,10 @@ def pull_all(outdir, offset_start, source_url,
                  filename='fullset_annojs_{}.json'.format(fullset_name),
                  json_content=list(fullset_anno.values()))
 
-    (catcha_list, error_list) = convert_and_save(
-        json_content=list(fullset_anno.values()),
-        workdir=outdir,
-        filename='fullset_catcha_{}.json'.format(fullset_name))
+    #(catcha_list, error_list) = convert_and_save(
+    #    json_content=list(fullset_anno.values()),
+    #    workdir=outdir,
+    #    filename='fullset_catcha_{}.json'.format(fullset_name))
 
 
 @click.command()
@@ -628,12 +492,24 @@ def compare_annojs(workdir, input_filepath_1, input_filepath_2):
     compare = ''
     for a in annojs_list_1:
         if a['id'] in annojs2.keys():
-            del a['archived']
-            del a['citation']
-            del a['deleted']
-            if 'quote' in a:
+            try:
+                del a['archived']
+            except KeyError:
+                pass  # ok if these already don't exist
+            try:
+                del a['citation']
+            except KeyError:
+                pass  # ok if these already don't exist
+            try:
+                del a['deleted']
+            except KeyError:
+                pass  # ok if these already don't exist
+            try:
                 if len(a['quote']) == 0:
                     del a['quote']
+            except KeyError:
+                pass  # ok if these already don't exist
+
             a['uri'] = str(a['uri'])
             if AnnoJS.are_similar(a, annojs2[a['id']]):
                 passed.append(a)
@@ -654,104 +530,11 @@ def compare_annojs(workdir, input_filepath_1, input_filepath_2):
                  json_content=passed)
 
 
-@click.command()
-@click.option('--outdir', default='tmp', help='output DIRECTORY; default=./tmp')
-@click.option('--offset_start', default=0,
-              help='if not pulling all set, specify offset to start')
-@click.option('--source_url', required=True, help='include http/https')
-@click.option('--api_key', required=True)
-@click.option('--secret_key', required=True)
-@click.option('--context_id', required=True)
-@click.option('--reuse_outdir/--no_reuse',
-              'exist_ok', default=False, help='default=no_reuse')
-def pull_all_v2(outdir, offset_start, source_url,
-                     api_key, secret_key, context_id,
-                     exist_ok):
-
-    # create output dir
-    try:
-        os.makedirs(outdir, mode=0o776, exist_ok=exist_ok)
-    except OSError:
-        click.echo('ERROR: outdir already exists({})'.format(outdir))
-        return
-
-    # create searchClient
-    client = CatchSearchClient_v2(
-        base_url=source_url, api_key=api_key,
-        secret_key=secret_key, user='admin')
-
-    # search all context_ids?
-    search_context_id = None if context_id == 'None' else context_id
-
-    # loop for fetching fullset
-    try:
-        total_len = client.fullset_size(context_id=search_context_id)
-    except Exception as e:
-        click.echo('ERROR: unable to fetch fullset_size: {}'.format(e))
-        return
-
-    total_pages = int(total_len/SEARCH_PAGE_SIZE)
-    if total_len % SEARCH_PAGE_SIZE > 0:
-        total_pages += 1
-
-    # save info about this search
-    fullset_name = clean_to_alphanum_only(context_id)
-    fullset_info = {
-        'source_url': source_url,
-        'api_key': api_key,
-        'context_id': context_id,
-        'total_rows': total_len,
-    }
-    save_to_file(outdir=outdir,
-                 filename='info_annojs_{0}.json'.format(fullset_name),
-                 json_content=fullset_info)
-    click.echo('total_len({}), total_pages({})'.format(total_len, total_pages))
-
-
-    # need to pull slices of result
-    page_no = 1
-    current_len = 0
-    offset = offset_start
-    fullset_anno = {}
-    more_to_pull = True
-    while more_to_pull and page_no < 50000:
-        try:
-            click.echo('************** pulling page({}), offset({}), limit({})'.format(
-                page_no, offset, SEARCH_PAGE_SIZE))
-            page_content = client.fetch_page(
-                context_id=search_context_id, offset=offset, limit=SEARCH_PAGE_SIZE)
-        except Exception as e:
-            click.echo('ERRO: {}'.format(e))
-            return
-        else:
-            size = 0
-            for c in page_content['rows']:
-                if c['id'] in fullset_anno:
-                    click.echo('GAAAAAAAAAAAAAAAAAAAAAH, duplicate({})'.format(c['id']))
-                else:
-                    fullset_anno[c['id']] = c
-                    size += 1
-
-            current_len += size
-            offset += size
-            more_to_pull = size > 0
-            click.echo('next page_no({}); this batch size({}); current_len({}); more?({})'.format(
-                page_no, size, current_len, more_to_pull))
-            page_no += 1
-
-    click.echo('FINISH pulling from source, total({})'.format(len(fullset_anno)))
-
-    save_to_file(outdir=outdir,
-                 filename='fullset_annojs_{}.json'.format(fullset_name),
-                 json_content=list(fullset_anno.values()))
-
 
 
 if __name__ == "__main__":
 
-    cli.add_command(pull_from_source)
     cli.add_command(pull_all)
-    cli.add_command(pull_all_v2)
     cli.add_command(convert)
     cli.add_command(push_to_target)
     cli.add_command(push_from_file)
