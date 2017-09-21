@@ -154,74 +154,43 @@ def make_token(source_url, api_key, secret_key, user):
 
 @click.command()
 @click.option('--workdir', default='tmp', help='directory for input/output; default=./tmp')
-@click.option('--context_id', required=True)
-def convert(workdir, context_id):
-    fullset_name = clean_to_alphanum_only(context_id)
-    all_files = sorted(os.listdir(workdir))
-    filename_regex = \
-            r'^annojs_' + re.escape(fullset_name) + '_(?P<page_no>[0-9]{3})'
+@click.option('--filepath', required=True)
+def convert(workdir, filepath):
 
-    count_missing_start = 0
+    with open(filepath, 'r') as f:
+        annojs_content = json.load(f)
 
-    # loop through input files
-    for filename in all_files:
-        if not fnmatch.fnmatch(filename, 'annojs_{}*'.format(fullset_name)):
-            continue
+    # hammering fixes
+    annojs_ok = []
+    annojs_messed = []
+    for c in annojs_content:
+        if 'media' in c:
+            if len(c['ranges']) > 0:
+                if 'start' not in c['ranges'][0]:
+                    c['ranges'][0]['start'] = ""
+                    c['ranges'][0]['end'] = ""
+            annojs_ok.append(c)
+        else:
+            annojs_messed.append(c)
 
-        # parse filename to get the page number
-        match = re.search(filename_regex, filename)
-        if match is None:  # skip file
-            click.echo('did not match, skipping {}'.format(filename))
-            continue
+    # get input filename as base for output filenames
+    basename = os.path.basename(filepath)
 
-        click.echo('did match, processing {}'.format(filename))
-        page_no = match.group('page_no')
+    # save messed up
+    save_to_file(workdir, 'messed_{}'.format(basename), annojs_messed)
 
-        # read file contents
-        path = os.path.join(workdir, filename)
-        with open(path, 'r') as f:
-            annojs_content = json.load(f)
-
-        # hammering fixes
-        annojs_ok = []
-        annojs_messed = []
-        for c in annojs_content:
-            if 'media' in c:
-                if len(c['ranges']) > 0:
-                    if 'start' not in c['ranges'][0]:
-                        c['ranges'][0]['start'] = ""
-                        c['ranges'][0]['end'] = ""
-                        count_missing_start += 1
-                annojs_ok.append(c)
-            else:
-                annojs_messed.append(c)
-
-        # save messed up
-        save_to_file(workdir, 'messed_{}'.format(filename), annojs_messed)
-
-        # convert and save
-        catcha_filename = 'catcha_{0}_{1}.json'.format(fullset_name, page_no)
-        (catcha_list, error_list) =  convert_and_save(
-            json_content=annojs_ok,
-            workdir=workdir,
-            filename=catcha_filename)
-
-
-    click.echo('exiting loop through input files')
-    click.echo('missing start({})'.format(count_missing_start))
-
-
-def import_to_db(catcha_list, resp_filepath):
-    jwt_payload = {'override': ['CAN_IMPORT']}
-
-    resp = CRUD.import_annos(catcha_list, jwt_payload)
+    # convert and save
+    catcha_filename = 'catcha_{}'.format(basename)
+    (catcha_list, error_list) =  convert_and_save(
+        json_content=annojs_ok,
+        workdir=workdir,
+        filename=catcha_filename)
 
 
 
 def convert_and_save(json_content, workdir, filename):
-    click.echo('workdir({}), filename({}), json_content({})'.format(workdir,
-                                                                    filename,
-                                                                    len(json_content)))
+    click.echo('workdir({}), filename({}), json_content({})'.format(
+        workdir, filename, len(json_content)))
 
     # convert
     (catcha_list, error_list) = convert_to_catcha(json_content)
@@ -237,83 +206,6 @@ def convert_and_save(json_content, workdir, filename):
                      json_content=error_list)
 
     return(catcha_list, error_list)
-
-
-@click.command()
-@click.option('--workdir', default='tmp', help='directory for input/output; default=./tmp')
-@click.option('--context_id', required=True)
-def push_to_target(workdir, context_id):
-    fullset_name = clean_to_alphanum_only(context_id)
-    all_files = sorted(os.listdir(workdir))
-    filename_regex = \
-            r'^catcha_' + re.escape(fullset_name) + '_(?P<page_no>[0-9]{3})'
-
-    # loop through input files
-    for filename in all_files:
-        if fnmatch.fnmatch(filename, 'catcha_{}*'.format(fullset_name)):
-            # parse filename to get the page number
-            match = re.search(filename_regex, filename)
-            if match is None:  # skip file
-                continue
-
-            page_no = match.group('page_no')
-
-            # read file contents
-            path = os.path.join(workdir, filename)
-
-            click.echo('pushing filename: {}'.format(filename))
-
-            with open(path, 'r') as f:
-                catcha_content = json.load(f)
-
-            # sort by anno_id to avoid importing reply before comment
-            ordered_catcha_list = sorted(
-                catcha_content, key=lambda k: k['id'])
-
-            save_to_file(workdir,
-                         filename='sorted_{}.json'.format(filename),
-                         json_content=ordered_catcha_list)
-
-            '''
-            resp_filename = 'error_{}'.format(filename)
-            resp_filepath = os.path.join(workdir, resp_filename)
-
-            import_to_db(ordered_catcha_list, resp_filepath)
-            '''
-
-@click.command()
-@click.option('--workdir', default='tmp', help='directory for input/output; default=./tmp')
-@click.option('--context_id', required=True)
-def debug(workdir, context_id):
-    fullset_name = clean_to_alphanum_only(context_id)
-    all_files = sorted(os.listdir(workdir))
-    filename_regex = \
-            r'^catcha_' + re.escape(fullset_name) + '_(?P<page_no>[0-9]{3})'
-
-    # loop through input files
-    for filename in all_files:
-        if fnmatch.fnmatch(filename, 'catcha_{}*'.format(fullset_name)):
-            # parse filename to get the page number
-            match = re.search(filename_regex, filename)
-            if match is None:  # skip file
-                continue
-
-            page_no = match.group('page_no')
-
-            # read file contents
-            path = os.path.join(workdir, filename)
-
-            click.echo('pushing filename: {}'.format(filename))
-
-            with open(path, 'r') as f:
-                catcha_content = json.load(f)
-
-            # sort by anno_id to avoid importing reply before comment
-            ordered_catcha_list = sorted(
-                catcha_content, key=lambda k: k['id'])
-
-            for c in ordered_catcha_list:
-                click.echo('id({}) created({})'.format(c['id'], c['created']))
 
 
 
@@ -409,10 +301,11 @@ def pull_all(outdir, offset_start, source_url,
                  filename='fullset_annojs_{}.json'.format(fullset_name),
                  json_content=list(fullset_anno.values()))
 
-    #(catcha_list, error_list) = convert_and_save(
-    #    json_content=list(fullset_anno.values()),
-    #    workdir=outdir,
-    #    filename='fullset_catcha_{}.json'.format(fullset_name))
+
+def print_db_info():
+    db = getattr(settings, 'DATABASES')
+    click.echo('db_host({}) db_name({})'.format(
+        db['default']['HOST'], db['default']['NAME']))
 
 
 @click.command()
@@ -420,37 +313,31 @@ def pull_all(outdir, offset_start, source_url,
 @click.option('--filepath', required=True, help='filepath for input file')
 def push_from_file(workdir, filepath):
 
+    print_db_info()
+
     with open(filepath, 'r') as f:
         catcha_list = json.load(f)
 
-    # sort between comment and replies
-    comment_list = []
-    reply_list = []
-    for c in catcha_list:
-        if Catcha.is_reply(c):
-            reply_list.append(c)
-        else:
-            comment_list.append(c)
+    # order by id (prevent a reply before associated annotation)
+    ordered_catcha_list = sorted(
+        catcha_list, key=lambda k: k['id'])
 
-    click.echo('comments({}), replies({})'.format(len(comment_list),
-                                                  len(reply_list)))
-
+    # mock payload to match permissions
     jwt_payload = {'override': ['CAN_IMPORT']}
-    resp_comment = CRUD.import_annos(comment_list, jwt_payload)
-    resp_reply = CRUD.import_annos(reply_list, jwt_payload)
 
-    failed_list = resp_comment['failed'] + resp_reply['failed']
+    resp = CRUD.import_annos(ordered_catcha_list, jwt_payload)
+    failed_list = resp['failed']
     save_to_file(outdir=workdir,
                  filename='fail_to_push_from_file_{}'.format(
                      os.path.basename(filepath)),
                 json_content=failed_list)
 
 
-
 @click.command()
 @click.option('--workdir', default='tmp', help='output DIRECTORY; default=./tmp')
 @click.option('--context_id', required=True)
 def clear_anno_in_context_id(workdir, context_id):
+    print_db_info()
 
     anno_list = Anno._default_manager.filter(
         raw__platform__context_id=context_id)
@@ -469,12 +356,32 @@ def clear_anno_in_context_id(workdir, context_id):
                 json_content=failed_list)
 
 
+@click.option('--workdir', default='tmp', help='output DIRECTORY; default=./tmp')
+@click.command()
+def find_reply_to_reply(workdir):
+    print_db_info()
+
+    reply_list = Anno._default_manager.all().exclude(
+        anno_reply_to_id=None)
+
+    reply_to_reply_list = []
+    for r in reply_list:
+        for rr in r.replies:
+            reply_to_reply_list.append(rr.serialized)
+
+    save_to_file(outdir=workdir,
+                 filename='reply_to_reply.json',
+                 json_content=reply_to_reply_list)
+
 
 @click.command()
 @click.option('--workdir', default='tmp', help='output DIRECTORY; default=./tmp')
 @click.option('--input_filepath_1', required=True)
 @click.option('--input_filepath_2', required=True)
 def compare_annojs(workdir, input_filepath_1, input_filepath_2):
+    """works like file2 contains file1? so set the original set of annojs to
+    file1 and the imported set to file2
+    """
 
     with open(input_filepath_1, 'r') as f:
         annojs_list_1 = json.load(f)
@@ -486,48 +393,44 @@ def compare_annojs(workdir, input_filepath_1, input_filepath_2):
 
     click.echo('dict has ({}) keys'.format(len(annojs2.keys())))
 
-    not_found = []
-    not_similar = []
-    passed = []
+    results = {
+        'not_found': [],
+        'not_similar': [],
+        'passed': [],
+    }
     compare = ''
     for a in annojs_list_1:
         if a['id'] in annojs2.keys():
-            try:
-                del a['archived']
-            except KeyError:
-                pass  # ok if these already don't exist
-            try:
-                del a['citation']
-            except KeyError:
-                pass  # ok if these already don't exist
-            try:
-                del a['deleted']
-            except KeyError:
-                pass  # ok if these already don't exist
-            try:
-                if len(a['quote']) == 0:
-                    del a['quote']
-            except KeyError:
-                pass  # ok if these already don't exist
+            b = annojs2[a['id']]
+            # will compare serialized json
+            for x in [a , b]:
+                x['uri'] = str(x['uri'])
+                # these props were dropped from legacy
+                for key in ['archived', 'citation', 'deleted']:
+                    try:
+                        del x[key]
+                    except KeyError:
+                        pass  # ok if these already don't exist
 
-            a['uri'] = str(a['uri'])
-            if AnnoJS.are_similar(a, annojs2[a['id']]):
-                passed.append(a)
+                try:  # v2 omits if empty string
+                    if len(x['quote']) == 0:
+                        del x['quote']
+                except KeyError:
+                    pass  # ok if these already don't exist
+
+
+            if AnnoJS.are_similar(a, b):
+                results['passed'].append(a)
             else:
-                not_similar.append(a)
-                not_similar.append(annojs2[a['id']])
+                results['not_similar'].append(a)
+                results['not_similar'].append(b)
         else:
-            not_found.append(a)
+            results['not_found'].append(a)
 
-    save_to_file(outdir=workdir,
-                 filename='test_not_found.json',
-                 json_content=not_found)
-    save_to_file(outdir=workdir,
-                 filename='test_not_similar.json',
-                 json_content=not_similar)
-    save_to_file(outdir=workdir,
-                 filename='test_passed.json',
-                 json_content=passed)
+    for category in ['not_found', 'not_similar', 'passed']:
+        save_to_file(outdir=workdir,
+                     filename='{}.json'.format(category),
+                     json_content=results[category])
 
 
 
@@ -536,12 +439,11 @@ if __name__ == "__main__":
 
     cli.add_command(pull_all)
     cli.add_command(convert)
-    cli.add_command(push_to_target)
     cli.add_command(push_from_file)
-    cli.add_command(debug)
     cli.add_command(clear_anno_in_context_id)
     cli.add_command(make_token)
     cli.add_command(compare_annojs)
+    cli.add_command(find_reply_to_reply)
     cli()
 
 
