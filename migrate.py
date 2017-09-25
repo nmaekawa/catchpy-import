@@ -20,6 +20,7 @@ from urllib.parse import urljoin
 
 # if dotenv file, load it
 dotenv_path = os.environ.get('CATCHPY_DOTENV_PATH', None)
+click.echo('dotenv path is ({})'.format(dotenv_path))
 if dotenv_path:
     load_dotenv(dotenv_path)
 
@@ -233,7 +234,7 @@ def pull_all(outdir, offset_start, source_url,
     # create searchClient
     client = CatchSearchClient(
         base_url=source_url, api_key=api_key,
-        secret_key=secret_key, user='admin')
+        secret_key=secret_key, user='__admin__')
 
     # search all context_ids?
     search_context_id = None if context_id == 'None' else context_id
@@ -270,9 +271,9 @@ def pull_all(outdir, offset_start, source_url,
     fullset_anno = {}
     more_to_pull = True
     while more_to_pull and page_no < 50000:
+        click.echo('************** pulling page({}), offset({}), limit({})'.format(
+            page_no, offset, SEARCH_PAGE_SIZE))
         try:
-            click.echo('************** pulling page({}), offset({}), limit({})'.format(
-                page_no, offset, SEARCH_PAGE_SIZE))
             page_content = client.fetch_page(
                 context_id=search_context_id, offset=offset, limit=SEARCH_PAGE_SIZE)
         except Exception as e:
@@ -280,6 +281,11 @@ def pull_all(outdir, offset_start, source_url,
             return
         else:
             size = 0
+            reported_size = int(page_content['size'])
+            reported_size_failed = int(page_content['size_failed'])
+            if reported_size_failed > 0:
+                click.echo('response has failed: ({})'.format(page_content['failed']))
+
             for c in page_content['rows']:
                 if c['id'] in fullset_anno:
                     # sanity check, not supposed to happen (i think)
@@ -289,8 +295,8 @@ def pull_all(outdir, offset_start, source_url,
                     size += 1
 
             current_len += size
-            offset += size
-            more_to_pull = size > 0
+            offset += (reported_size + reported_size_failed)
+            more_to_pull = reported_size > 0
             click.echo('next page_no({}); this batch size({}); current_len({}); more?({})'.format(
                 page_no, size, current_len, more_to_pull))
             page_no += 1
