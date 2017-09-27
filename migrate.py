@@ -36,6 +36,7 @@ django.setup()
 #
 
 from anno.crud import CRUD
+from anno.errors import AnnoError
 from anno.json_models import AnnoJS
 from anno.json_models import Catcha
 from anno.models import Anno
@@ -439,6 +440,60 @@ def compare_annojs(workdir, input_filepath_1, input_filepath_2):
                      json_content=results[category])
 
 
+@click.command()
+@click.option('--workdir', default='tmp', help='output DIRECTORY; default=./tmp')
+@click.option('--source_context_id', required=True)
+@click.option('--target_context_id', required=True)
+@click.option('--source_collection_id', required=True)
+@click.option('--target_collection_id', required=True)
+@click.option('--platform_name', default=None)
+@click.option('--userid_list', default=None)
+@click.option('--username_list', default=None)
+def copy(workdir,
+        source_context_id, target_context_id,
+        source_collection_id, target_collection_id,
+        platform_name,
+        userid_list, username_list):
+
+    print_db_info()
+
+    # mock payload to match permissions
+    jwt_payload = {'override': ['CAN_COPY']}
+
+    userids = userid_list.split(',') if userid_list else None
+    usernames = username_list.split(',') if username_list else None
+    click.echo('userids({}), usernames({})'.format(userids, usernames))
+
+    try:
+        resp = CRUD.copy_annos(
+            jwt_payload=jwt_payload,
+            source_context_id=source_context_id,
+            target_context_id=target_context_id,
+            source_collection_id=source_collection_id,
+            target_collection_id=target_collection_id,
+            platform_name=platform_name,
+            #userid_list=userids,
+            username_list=usernames,
+            )
+
+    except AnnoError as e:
+        click.echo('unable to copy: {}'.format(e))
+        return -1
+    else:
+        filename = 'copy_from_{}_to_{}.json'.format(
+                clean_to_alphanum_only(source_context_id),
+                clean_to_alphanum_only(target_context_id))
+
+        save_to_file(outdir=workdir,
+                    filename='success_{}'.format(filename),
+                    json_content=resp['success'])
+        save_to_file(outdir=workdir,
+                    filename='failure_{}'.format(filename),
+                    json_content=resp['failed'])
+
+        click.echo('original_total={}, total_success={}, total_failed={}'.format(
+            resp['original_total'], resp['total_success'], resp['total_failed']))
+
 
 
 if __name__ == "__main__":
@@ -450,6 +505,7 @@ if __name__ == "__main__":
     cli.add_command(make_token)
     cli.add_command(compare_annojs)
     cli.add_command(find_reply_to_reply)
+    cli.add_command(copy)
     cli()
 
 
