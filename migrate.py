@@ -328,10 +328,7 @@ def push_from_file(workdir, filepath):
     ordered_catcha_list = sorted(
         catcha_list, key=lambda k: k['id'])
 
-    # mock payload to match permissions
-    jwt_payload = {'override': ['CAN_IMPORT']}
-
-    resp = CRUD.import_annos(ordered_catcha_list, jwt_payload)
+    resp = CRUD.import_annos(ordered_catcha_list)
     failed_list = resp['failed']
     save_to_file(outdir=workdir,
                  filename='fail_to_push_from_file_{}'.format(
