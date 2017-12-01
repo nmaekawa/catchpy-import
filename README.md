@@ -1,5 +1,10 @@
-catchpy migration script
+catchpy migration script -- DEPRECATED
 ========================
+
+this repo is deprecated.
+catchpy 1.4.0 (https://github.com/nmaekawa/catchpy/tree/1.4.0)
+has django-admin commands to import and convert from AnnotatorJS.
+
 
 Script to migrate annotations from catch v1 to catchpy v2.
 

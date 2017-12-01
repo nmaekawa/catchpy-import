@@ -281,8 +281,15 @@ def pull_all(outdir, offset_start, source_url,
             return
         else:
             size = 0
-            reported_size = int(page_content['size'])
-            reported_size_failed = int(page_content['size_failed'])
+            if 'size' in page_content:
+                reported_size = int(page_content['size'])
+            else:
+                reported_size = len(page_content['rows'])
+                click.echo('-------------------------------------------------------------------')
+                click.echo('i have len({})'.format(len(page_content['rows'])))
+                click.echo('-------------------------------------------------------------------')
+
+            reported_size_failed = int(page_content['size_failed']) if 'size_failed' in page_content else 0
             if reported_size_failed > 0:
                 click.echo('response has failed: ({})'.format(page_content['failed']))
 
@@ -294,11 +301,13 @@ def pull_all(outdir, offset_start, source_url,
                     fullset_anno[c['id']] = c
                     size += 1
 
-            current_len += size
+            current_len += reported_size
             offset += (reported_size + reported_size_failed)
-            more_to_pull = reported_size > 0
-            click.echo('next page_no({}); this batch size({}); current_len({}); more?({})'.format(
-                page_no, size, current_len, more_to_pull))
+            more_to_pull = reported_size > 0 and reported_size != int(page_content['total'])
+            click.echo('-------------------------------------------------------------------')
+            click.echo('next page_no({}); offset({}); this batch size({}); current_len({}); more?({})'.format(
+                page_no, offset, reported_size, current_len, more_to_pull))
+            click.echo('-------------------------------------------------------------------')
             page_no += 1
 
     click.echo('FINISH pulling from source, total({})'.format(len(fullset_anno)))
