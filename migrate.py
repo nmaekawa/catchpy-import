@@ -105,6 +105,20 @@ class CatchSearchClient(object):
         search_content = resp.json()
         return search_content
 
+    def create_list(self, catcha_list):
+        full_response = []
+        for catcha in catcha_list:
+
+            resp = requests.post(
+                self.url, verify=True,
+                headers=self.default_headers, timeout=self.timeout,
+                data=json.dumps(catcha),
+            )
+            resp.raise_for_status()
+            content = resp.json()
+            full_response.append(content)
+        return full_response
+
 
 def convert_to_catcha(annojs_list):
     catcha_list = []
@@ -187,6 +201,39 @@ def convert(workdir, filepath):
         workdir=workdir,
         filename=catcha_filename)
 
+
+@click.command()
+@click.option('--workdir', default='tmp', help='directory for input/output; default=./tmp')
+@click.option('--filepath', required=True)
+@click.option('--source_url', required=True, help='include http/https')
+@click.option('--api_key', required=True)
+@click.option('--secret_key', required=True)
+@click.option('--user', default='user')
+def create_list(source_url, api_key, secret_key, user, workdir, filepath):
+
+    # create searchClient
+    client = CatchSearchClient(
+        base_url=source_url, api_key=api_key,
+        secret_key=secret_key, user=user)
+
+    click.echo(client.make_token_for_user(user))
+
+    with open(filepath, 'r') as f:
+        content = json.load(f)
+
+    if 'rows' in content:
+        catcha_list = content['rows']
+    else:
+        catcha_list = content
+
+    # create list of catchas in target catchpy
+    result = client.create_list(catcha_list)
+
+    # get input filename as base for output filenames
+    basename = os.path.basename(filepath)
+
+    # save result
+    save_to_file(workdir, 'created_{}'.format(basename), result)
 
 
 def convert_and_save(json_content, workdir, filename):
@@ -456,6 +503,7 @@ if __name__ == "__main__":
     cli.add_command(make_token)
     cli.add_command(compare_annojs)
     cli.add_command(find_reply_to_reply)
+    cli.add_command(create_list)
     cli()
 
 
